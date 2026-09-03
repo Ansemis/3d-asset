@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<title>Bolla di sapone — 3D</title>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.184.0/build/three.module.js",
+    "three/addons/controls/OrbitControls.js": "https://unpkg.com/three@0.184.0/examples/jsm/controls/OrbitControls.js",
+    "three/addons/exporters/OBJExporter.js": "https://unpkg.com/three@0.184.0/examples/jsm/exporters/OBJExporter.js",
+    "three/addons/exporters/GLTFExporter.js": "https://unpkg.com/three@0.184.0/examples/jsm/exporters/GLTFExporter.js"
+  },
+  "integrity": {
+    "https://unpkg.com/three@0.184.0/build/three.module.js": "sha384-8FCZ1eVO6it4+pbec2aDtnTrwjWXZLJRC+MAGCIPDgsYnUrl/E0A2YlF8ioMKI/J",
+    "https://unpkg.com/three@0.184.0/build/three.core.js": "sha384-dw2ooPewaEIrAgl6oFDBmmBWCE9oW9LxRGcfwZ0hLvEprzo202wXl7vCYHRlSnOT",
+    "https://unpkg.com/three@0.184.0/examples/jsm/controls/OrbitControls.js": "sha384-4rziNxOBZKQ69i+w+f89KJ55TCYquwchVbByQwmaOeIOXdOU2PLDn3kOfXHwIJC9",
+    "https://unpkg.com/three@0.184.0/examples/jsm/exporters/OBJExporter.js": "sha384-nbwtoZENJD3Vq+ACK0CuGQdPMuDWHkamC2KJD70EV5nfg6jQjfppKOea07YJN+N3",
+    "https://unpkg.com/three@0.184.0/examples/jsm/exporters/GLTFExporter.js": "sha384-VofkvpG6HERhFCYbsUOHeNXBCqID2nfqkQqnVzE1jc/oPcz+qJ13ADdXH08hE+cQ"
+  }
+}
+</script>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0d12; }
+  three-d-stage:not(:defined) { visibility: hidden; }
+  three-d-stage { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<three-d-stage name="soap-bubble" background="#0b0d12"></three-d-stage>
+<script src="three-d-stage.js"></script>
+<script type="module">
+import * as THREE from 'three';
+
+const stage = document.querySelector('three-d-stage');
+await stage.ready;
+
+/* --- Environment: a studio-ish equirect gradient with a few soft light
+       blobs. A transmissive, iridescent film needs something to refract;
+       without an env map the bubble reads as flat grey. --- */
+function studioEnv(renderer) {
+  const w = 1024, h = 512;
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0.00, '#dfe7f2');
+  g.addColorStop(0.45, '#8f9bb3');
+  g.addColorStop(0.55, '#3a4152');
+  g.addColorStop(1.00, '#12141b');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+  const blobs = [
+    [0.22, 0.20, 190, 'rgba(255,255,255,1.00)'],
+    [0.68, 0.28, 150, 'rgba(255,226,170,0.90)'],
+    [0.45, 0.70, 170, 'rgba(110,175,255,0.70)'],
+    [0.90, 0.55, 130, 'rgba(255,130,190,0.60)'],
+    [0.08, 0.62, 140, 'rgba(120,255,220,0.45)']
+  ];
+  for (const [x, y, r, col] of blobs) {
+    const rg = ctx.createRadialGradient(x * w, y * h, 0, x * w, y * h, r);
+    rg.addColorStop(0, col);
+    rg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = rg;
+    ctx.fillRect(x * w - r, y * h - r, r * 2, r * 2);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const env = pmrem.fromEquirectangular(tex).texture;
+  pmrem.dispose(); tex.dispose();
+  return env;
+}
+stage._scene.environment = studioEnv(stage._renderer);
+stage._renderer.toneMapping = THREE.ACESFilmicToneMapping;
+stage._renderer.toneMappingExposure = 1.45;
+
+// Coloured rim lights: what makes a real bubble read as a bubble is the
+// specular rim, not the body.
+const rimA = new THREE.PointLight(0x88bbff, 0.9, 0, 2); rimA.position.set(-0.25, 0.18, -0.2);
+const rimB = new THREE.PointLight(0xffb3d9, 0.5, 0, 2); rimB.position.set(0.22, -0.12, 0.24);
+stage._scene.add(rimA, rimB);
+
+/* --- Geometry: a 0.10 m bubble, gently non-spherical. Real bubbles are
+       never perfect: surface tension plus a little sag from gravity. --- */
+const R = 0.10;
+const geo = new THREE.SphereGeometry(R, 192, 128);
+{
+  const p = geo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    const n = v.clone().normalize();
+    // slight vertical sag + very low-frequency wobble
+    const sag = -0.012 * R * (1 - n.y * n.y) * (n.y < 0 ? 1.6 : 0.6);
+    const wob = 0.006 * R * (Math.sin(n.x * 4.1 + 1.3) + Math.cos(n.z * 3.7 - 0.6) + Math.sin(n.y * 5.2));
+    v.copy(n).multiplyScalar(R + wob).add(new THREE.Vector3(0, sag, 0));
+    p.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();
+}
+
+/* --- Material: thin soap film. Full transmission, near-air IOR, thin
+       thickness, and thin-film iridescence for the swirling colours. --- */
+function swirlMap() {
+  const w = 1024, h2 = 512;
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h2;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#808080'; ctx.fillRect(0, 0, w, h2);
+  for (let i = 0; i < w; i++) {
+    for (let j = 0; j < h2; j++) {
+      const u = i / w * Math.PI * 2, v = j / h2 * Math.PI;
+      let n = 0.5
+        + 0.26 * Math.sin(u * 3 + Math.cos(v * 2.4) * 2.2)
+        + 0.18 * Math.sin(v * 5.1 + Math.sin(u * 2.2) * 1.7)
+        + 0.06 * Math.sin(u * 5.3 + v * 4.1);
+      n = Math.max(0, Math.min(1, n * (0.35 + 0.75 * (1 - j / h2))));
+      const g = Math.round(n * 255);
+      ctx.fillStyle = 'rgb(' + g + ',' + g + ',' + g + ')';
+      ctx.fillRect(i, j, 1, 1);
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
+const film = new THREE.MeshPhysicalMaterial({
+  name: 'soap-film',
+  color: 0x000000,
+  transparent: true,
+  opacity: 1.0,
+  blending: THREE.AdditiveBlending,
+  transmission: 0.0,
+  ior: 1.33,
+  roughness: 0.0,
+  metalness: 0.0,
+  iridescence: 1.0,
+  iridescenceIOR: 1.42,
+  iridescenceThicknessMap: swirlMap(),
+  iridescenceThicknessRange: [260, 820],
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.0,
+  specularIntensity: 1.0,
+  envMapIntensity: 1.7,
+  side: THREE.DoubleSide,
+  depthWrite: false
+});
+
+const bubble = new THREE.Mesh(geo, film);
+bubble.name = 'bubble-film';
+
+const model = new THREE.Group();
+model.name = 'soap-bubble';
+model.add(bubble);
+stage.setObject(model);
+
+// The film should not cast a hard silhouette on the ground.
+model.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
+</script>
+</body>
+</html>
